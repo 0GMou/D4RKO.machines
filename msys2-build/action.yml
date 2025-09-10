@@ -37,7 +37,8 @@ runs:
         $msys = "${{ inputs.msystem }}".ToLower()
         if ($msys -ne "clang64" -and $msys -ne "ucrt64") { throw "invalid msystem" }
         $prefix = if ($msys -eq "clang64") { "mingw-w64-clang-x86_64-" } else { "mingw-w64-ucrt-x86_64-" }
-        $base = @(
+
+        [string[]]$base = @(
           "${prefix}toolchain",
           "${prefix}python",
           "${prefix}meson",
@@ -46,7 +47,8 @@ runs:
           "${prefix}cmake",
           "git","zip","curl","jq","tar","unzip"
         )
-        $mpv = @(
+
+        [string[]]$mpv = @(
           "${prefix}ffmpeg",
           "${prefix}libass",
           "${prefix}libplacebo",
@@ -68,15 +70,17 @@ runs:
           "${prefix}nasm",
           "${prefix}yasm"
         )
-        $pkgs = New-Object System.Collections.Generic.List[string]
-        $pkgs.AddRange($base)
-        if ("${{ inputs.include_mpv_deps }}".ToLower() -eq "true") { $pkgs.AddRange($mpv) }
-        if ("${{ inputs.extra_packages }}".Trim().Length -gt 0) {
-          $extra = "${{ inputs.extra_packages }}".Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
-          $pkgs.AddRange($extra)
-        }
-        $line = ($pkgs | Select-Object -Unique) -join " "
+
+        $pkgs = @()
+        $pkgs += $base
+        if ("${{ inputs.include_mpv_deps }}".ToLower() -eq "true") { $pkgs += $mpv }
+        $extra = "${{ inputs.extra_packages }}".Trim()
+        if ($extra.Length -gt 0) { $pkgs += $extra.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries) }
+        $pkgs = $pkgs | ForEach-Object { "$_" }
+        $pkgs = $pkgs | Select-Object -Unique
+        $line = ($pkgs -join " ")
         "pkgs=$line" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
     - name: Setup MSYS2
       uses: msys2/setup-msys2@v2
       with:
@@ -84,6 +88,7 @@ runs:
         update: true
         cache: true
         install: ${{ steps.compute-packages.outputs.pkgs }}
+
     - name: Run build script
       shell: msys2 {0}
       working-directory: ${{ inputs.working-directory }}
