@@ -1,17 +1,17 @@
 name: msys2-build
-description: "Setup MSYS2 (clang64|ucrt64), install packages, run build script (generic; mpv-ready by default)."
+description: "Setup MSYS2 (clang64|ucrt64), install packages, run build script"
 author: D4RKO
 inputs:
   msystem:
     description: "MSYS2 environment (clang64 or ucrt64)"
     required: false
-    default: "clang64"
+    default: "ucrt64"
   include_mpv_deps:
-    description: "Include broad mpv dependencies by default"
+    description: "Include broad mpv dependencies"
     required: false
     default: "true"
   extra_packages:
-    description: "Space-separated additional packages (prefixed or not; leave empty if none)"
+    description: "Space-separated additional packages"
     required: false
     default: ""
   working-directory:
@@ -23,22 +23,20 @@ inputs:
     required: false
     default: |
       set -euxo pipefail
-      clang --version
+      clang --version || true
+      gcc --version || true
       meson --version || true
       ninja --version || true
 runs:
   using: "composite"
   steps:
     - id: compute-packages
-      name: Compute MSYS2 package list
+      name: Compute packages
       shell: pwsh
       run: |
         $msys = "${{ inputs.msystem }}".ToLower()
-        if ($msys -ne "clang64" -and $msys -ne "ucrt64") {
-          throw "Invalid msystem: $msys (expected clang64 or ucrt64)"
-        }
+        if ($msys -ne "clang64" -and $msys -ne "ucrt64") { throw "invalid msystem" }
         $prefix = if ($msys -eq "clang64") { "mingw-w64-clang-x86_64-" } else { "mingw-w64-ucrt-x86_64-" }
-
         $base = @(
           "${prefix}toolchain",
           "${prefix}python",
@@ -48,7 +46,6 @@ runs:
           "${prefix}cmake",
           "git","zip","curl","jq","tar","unzip"
         )
-
         $mpv = @(
           "${prefix}ffmpeg",
           "${prefix}libass",
@@ -71,27 +68,22 @@ runs:
           "${prefix}nasm",
           "${prefix}yasm"
         )
-
         $pkgs = New-Object System.Collections.Generic.List[string]
         $pkgs.AddRange($base)
         if ("${{ inputs.include_mpv_deps }}".ToLower() -eq "true") { $pkgs.AddRange($mpv) }
-
         if ("${{ inputs.extra_packages }}".Trim().Length -gt 0) {
           $extra = "${{ inputs.extra_packages }}".Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
           $pkgs.AddRange($extra)
         }
-
         $line = ($pkgs | Select-Object -Unique) -join " "
         "pkgs=$line" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-    - name: Setup MSYS2 and install packages
+    - name: Setup MSYS2
       uses: msys2/setup-msys2@v2
       with:
         msystem: ${{ inputs.msystem }}
         update: true
         cache: true
         install: ${{ steps.compute-packages.outputs.pkgs }}
-
     - name: Run build script
       shell: msys2 {0}
       working-directory: ${{ inputs.working-directory }}
