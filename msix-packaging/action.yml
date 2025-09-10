@@ -1,0 +1,110 @@
+name: msix-packaging
+description: "Create MSIX with MakeAppx and optional signing"
+author: D4RKO
+inputs:
+  identity_name:
+    description: "Package Identity Name"
+    required: true
+  publisher:
+    description: "Publisher CN"
+    required: true
+  display_name:
+    description: "DisplayName"
+    required: true
+  publisher_display_name:
+    description: "PublisherDisplayName"
+    required: true
+  version:
+    description: "Version a.b.c.d"
+    required: true
+  entry_exe:
+    description: "Path to entry exe"
+    required: true
+  architecture:
+    description: "x64 or arm64"
+    required: false
+    default: "x64"
+  output_msix:
+    description: "Output msix path"
+    required: false
+    default: "dist/app.msix"
+  sign_method:
+    description: "none or pfx or azure"
+    required: false
+    default: "none"
+  pfx_base64:
+    description: "Base64 PFX"
+    required: false
+    default: ""
+  pfx_password:
+    description: "PFX password"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - id: prep
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $ws = $env:GITHUB_WORKSPACE
+        $root = Join-Path $ws ".msixbuild"
+        if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+        New-Item -ItemType Directory -Path $root | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $root "app") | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $root "Assets") | Out-Null
+        $src = Join-Path $ws "${{ inputs.entry_exe }}"
+        if (!(Test-Path $src)) { throw "entry exe not found" }
+        $exeName = "app.exe"
+        Copy-Item $src (Join-Path $root "app\$exeName")
+        $b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOe3q1QAAAAASUVORK5CYII="
+        [IO.File]::WriteAllBytes((Join-Path $root "Assets\StoreLogo.png"), [Convert]::FromBase64String($b64))
+        [IO.File]::WriteAllBytes((Join-Path $root "Assets\Logo.png"), [Convert]::FromBase64String($b64))
+        [IO.File]::WriteAllBytes((Join-Path $root "Assets\SmallLogo.png"), [Convert]::FromBase64String($b64))
+        $arch = "${{ inputs.architecture }}".ToLower()
+        if ($arch -ne "x64" -and $arch -ne "arm64") { throw "invalid architecture" }
+        $manifest = @"
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" IgnorableNamespaces="uap">
+  <Identity Name="${{ inputs.identity_name }}" Publisher="${{ inputs.publisher }}" Version="${{ inputs.version }}" ProcessorArchitecture="$arch" />
+  <Properties>
+    <DisplayName>${{ inputs.display_name }}</DisplayName>
+    <PublisherDisplayName>${{ inputs.publisher_display_name }}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0"/>
+  </Dependencies>
+  <Applications>
+    <Application Id="App" Executable="app\$exeName" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="${{ inputs.display_name }}" Description="${{ inputs.display_name }}" Square150x150Logo="Assets\Logo.png" Square44x44Logo="Assets\SmallLogo.png" BackgroundColor="transparent"/>
+    </Application>
+  </Applications>
+</Package>
+"@
+        $manifest | Out-File -FilePath (Join-Path $root "AppxManifest.xml") -Encoding UTF8
+        $make = (Get-Command makeappx.exe -ErrorAction SilentlyContinue)
+        if (-not $make) {
+          $c = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter makeappx.exe -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          if ($c) { $make = $c.FullName }
+        } else { $make = $make.Source }
+        if (-not $make) { throw "makeappx not found" }
+        $outPath = Join-Path $ws "${{ inputs.output_msix }}"
+        $outDir = Split-Path $outPath -Parent
+        if (!(Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+        & $make pack /d $root /p $outPath /o
+        if ($LASTEXITCODE -ne 0) { throw "makeappx failed" }
+        if ("${{ inputs.sign_method }}".ToLower() -eq "pfx") {
+          if ("${{ inputs.pfx_base64 }}".Length -eq 0) { throw "pfx missing" }
+          $pfx = Join-Path $ws ".msixbuild\code.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String("${{ inputs.pfx_base64 }}"))
+          $sig = (Get-Command signtool.exe -ErrorAction SilentlyContinue)
+          if (-not $sig) {
+            $s2 = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+            if ($s2) { $sig = $s2.FullName }
+          } else { $sig = $sig.Source }
+          if (-not $sig) { throw "signtool not found" }
+          & $sig sign /f $pfx /p "${{ inputs.pfx_password }}" /fd sha256 /tr http://timestamp.digicert.com /td sha256 $outPath
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+        }
+        "msix_path=$outPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
